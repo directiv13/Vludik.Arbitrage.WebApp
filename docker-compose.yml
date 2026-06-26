@@ -1,0 +1,15 @@
+services:
+  web:
+    build:
+      context: .
+      target: dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules        # prevent host node_modules from overwriting container's
+      - /app/.next               # preserve Next.js build cache inside container
+    environment:
+      - NEXT_PUBLIC_WS_URL=ws://host.docker.internal:8080/ws
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux host resolution
