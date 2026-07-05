@@ -5,7 +5,7 @@ import { getExchangeRefs, useSubscriptionStore } from '@/store/subscriptionStore
 import { ClientMessage, parseTick, SubscribeMessage } from '@/types/ws';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:8080/ws';
-const PING_INTERVAL_MS = 30_000;
+const PING_INTERVAL_MS = 25_000;
 const RECONNECT_DELAY_MS = 2_000;
 
 type SubscriptionParams = SubscribeMessage['params'];

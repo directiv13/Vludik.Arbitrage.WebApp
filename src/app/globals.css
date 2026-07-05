@@ -34,6 +34,22 @@
   }
 }
 
+/* Decorative keyframes used by the /login page (ported from design/Login.dc.html). */
+@keyframes arbor-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+@keyframes arbor-dash {
+  to { stroke-dashoffset: -1000; }
+}
+@keyframes arbor-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes arbor-spin {
+  to { transform: rotate(360deg); }
+}
+
 html,
 body {
   height: 100%;

@@ -2,7 +2,7 @@
 
 ## Project overview
 
-React/Next.js client for a crypto arbitrage platform. Connects to a Subscriptions Service over WebSocket to stream live order book ticks (bestBid / bestAsk) for a symbol+exchange pair, then computes and charts the entry and exit spread in real time.
+React/Next.js client for a crypto arbitrage platform ("Arbor"). Connects to a Subscriptions Service over WebSocket to stream live order book ticks (bestBid / bestAsk) for a symbol+exchange pair, then computes and charts the entry and exit spread in real time. Authentication runs through a server-side BFF (Backend-for-Frontend) — the browser only ever holds an opaque, httpOnly session cookie.
 
 This is a separate repo from the backend.
 
@@ -18,31 +18,58 @@ This is a separate repo from the backend.
 | Charting | TradingView Lightweight Charts |
 | State management | Zustand |
 | WebSocket | Native browser `WebSocket` API, wrapped in a custom hook |
+| Session storage | `iron-session` (encrypted, stateless, httpOnly cookie) |
+| Sign-in | Google Identity Services via `@react-oauth/google`'s `<GoogleLogin>` |
 
 ---
 
-## Repository layout (target)
+## Repository layout
 
 ```
 src/
-  app/                   # Next.js App Router pages
-    page.tsx             # Root page — layout shell
-    layout.tsx
+  app/
+    page.tsx                    # Root page — layout shell
+    layout.tsx                  # Wraps children in <Providers> (GoogleOAuthProvider + AuthProvider)
+    login/
+      page.tsx                  # /login — Google sign-in, redirects if already authenticated
+    api/
+      auth/
+        google/route.ts         # POST — exchange Google idToken via Identity, create session
+        refresh/route.ts        # POST — refresh via Identity, rotate session
+        logout/route.ts         # POST — revoke upstream + destroy session
+        session/route.ts        # GET  — { isAuthenticated, user } only, never tokens
+      gw/[...path]/route.ts     # BFF proxy to API_GATEWAY_URL, attaches access token server-side
+  proxy.ts                      # Fast cookie-presence redirect (Next.js 16's renamed middleware.ts)
   components/
     Header/
-      Header.tsx         # Strategy mode toggle (Long+Short / Spot+Short)
+      Header.tsx                # Strategy mode toggle (Long+Short / Spot+Short)
     RightBar/
-      RightBar.tsx       # Symbol input, future controls
+      RightBar.tsx               # Symbol input, future controls
     Chart/
-      SpreadChart.tsx    # TradingView Lightweight Charts wrapper
+      SpreadChart.tsx            # TradingView Lightweight Charts wrapper
+    Auth/
+      AuthProvider.tsx           # Bootstraps auth state from GET /api/auth/session on mount
+      Providers.tsx              # GoogleOAuthProvider > AuthProvider composition root
+    Login/
+      BrandPanel.tsx             # /login left panel (decorative, ported from design/Login.dc.html)
+      SignInCard.tsx              # /login right panel (GoogleLogin button + states)
   hooks/
-    useSubscription.ts   # WebSocket lifecycle: connect, subscribe, ping, reconnect
+    useSubscription.ts          # WebSocket lifecycle: connect, subscribe, ping, reconnect
+    useAuth.ts                  # Reads authStore, exposes signInWithGoogle()/logout()
   store/
-    subscriptionStore.ts # Zustand store — subscription params, ticks, strategy mode
+    subscriptionStore.ts        # Zustand store — subscription params, ticks, strategy mode
+    authStore.ts                # Zustand store — user, isAuthenticated, loading
   types/
-    ws.ts                # TypeScript types for all WS messages
+    ws.ts                       # TypeScript types for all WS messages
+    auth.ts                     # AuthUser — shared between client and server auth code
   lib/
-    spread.ts            # Spread computation + chart time-bucketing helpers
+    spread.ts                   # Spread computation + chart time-bucketing helpers
+    apiClient.ts                 # apiFetch() — same-origin BFF calls with single-flight refresh
+    server/
+      session.ts                 # iron-session wrapper: get/save/destroySession, getAccessToken
+      identityClient.ts           # Typed fetch wrapper around IDENTITY_SERVICE_URL
+      csrf.ts                     # Origin/Sec-Fetch-Site guard for mutating BFF routes
+      gatewayRefresh.ts           # Server-side single-flight refresh coalescing for the gw proxy
 ```
 
 ---
@@ -141,7 +168,57 @@ To identify which side of the spread a tick belongs to, match `Exchange` + `Cont
 - Unexpected close → attempt reconnect, then re-subscribe with the last active params.
 - Server does **not** buffer missed ticks. Gaps during disconnect are lost.
 - Server does **not** send error frames for bad messages — they are silently dropped.
-- No server-side auth (MVP).
+- No server-side auth on the WS connection itself (see "Planned future iterations") — this is separate from the HTTP-side BFF auth described below, which is already implemented.
+
+---
+
+## Authentication (BFF)
+
+All tokens live **server-side**. The browser only ever holds an opaque, httpOnly session cookie (`arbor_session` by default) — never an access token, refresh token, or ID token.
+
+### Two upstreams, one BFF
+
+- **Identity service** (`IDENTITY_SERVICE_URL`) — called directly by the BFF, only for `/auth/*`. Never called from the browser.
+- **API Gateway** (`API_GATEWAY_URL`) — every other backend call (jobs, subscriptions, users, credentials, market data, etc.) goes through the BFF's proxy at `/api/gw/[...path]`, which attaches `Authorization: Bearer <accessToken>` server-side.
+
+The browser calls **same-origin `/api/*` routes only**. It never talks to Identity or the Gateway directly.
+
+### Session (`src/lib/server/session.ts`)
+
+`iron-session`, cookie-only (not a session-id + store — the current access/refresh token pair comfortably fits the ~4KB cookie budget). `SessionData` is `{ accessToken?, refreshToken?, user?, accessTokenExpiresAt? }`, sealed with `SESSION_SECRET`. All reads/writes go through five exported functions (`getSession`, `saveSession`, `destroySession`, `getAccessToken`, `isAuthenticated`) — if the cookie ever needs to become an opaque session-id backed by a store instead, this file is the only one that changes.
+
+### BFF routes
+
+| Route | Purpose |
+|---|---|
+| `POST /api/auth/google` | Body `{ idToken }` (the Google credential) → Identity `/auth/google` → saves session → responds with `{ user }` only |
+| `POST /api/auth/refresh` | Uses the session's refresh token → Identity `/auth/refresh` → rotates session |
+| `POST /api/auth/logout` | Revokes the refresh token upstream, then destroys the session |
+| `GET /api/auth/session` | `{ isAuthenticated, user }` — used by `AuthProvider` to bootstrap client state |
+| `GET/POST/PUT/PATCH/DELETE /api/gw/[...path]` | Proxies to `API_GATEWAY_URL`, attaching the access token |
+
+`src/lib/server/identityClient.ts`'s `parseIdentityAuthResult()` normalizes Identity's response the same way `parseTick()` normalizes WS ticks — camelCase field names are assumed but unverified against the real Identity service; that function is the one place to fix if the real shape differs.
+
+### Transparent refresh (single-flight)
+
+Identity is assumed to **rotate refresh tokens**, so a burst of parallel 401s must not each fire their own refresh (the first would invalidate the rest). Two layers:
+
+- **Client** (`src/lib/apiClient.ts`'s `apiFetch`) — module-level `refreshPromise` singleton coalesces concurrent 401s into one `/api/auth/refresh` call; retries the original request once regardless of refresh outcome (covers a concurrent refresh from another tab already having rotated the cookie); only redirects to `/login` if that retry is still 401.
+- **Server** (`src/lib/server/gatewayRefresh.ts`'s `coordinatedRefresh`) — defense-in-depth `Map` keyed by a hash of the current refresh token, coalescing concurrent 401s within one server process. Not a cross-instance guarantee under multi-instance/serverless deployment — the client-side layer is primary.
+
+Both cap at **one refresh + one retry**, never loop.
+
+### Google Sign-In
+
+`@react-oauth/google`'s `<GoogleLogin onSuccess>` only — **never** `useGoogleLogin` (it returns an OAuth access token, not the ID token the BFF needs). `credentialResponse.credential` is the ID token, sent to `POST /api/auth/google`, never to Identity directly.
+
+### Route protection (`src/proxy.ts`)
+
+Next.js 16 renamed the `middleware.ts` file convention to `proxy.ts` (exported function `proxy`, not `middleware`) — `middleware.ts` still works but is deprecated. `proxy.ts` does a **fast cookie-presence check only** (`request.cookies.has(...)`), redirecting unauthenticated requests to `/login` and authenticated requests away from `/login`. It does **not** unseal or validate the cookie — `next/headers`' `cookies()` (which `getIronSession` needs) isn't available outside Server Components/Route Handlers. Authoritative validation happens in route handlers and via the gateway rejecting a stale/forged token, which flows through the refresh-or-destroy logic above.
+
+### CSRF
+
+`src/lib/server/csrf.ts`'s `csrfGuard(request)` checks `Sec-Fetch-Site`/`Origin` against the app's own origin and is the first line of every mutating route handler (all of `/api/auth/*`'s POSTs, and the non-GET methods of `/api/gw/[...path]`). Combined with the cookie's `sameSite: 'lax'`.
 
 ---
 
@@ -197,9 +274,11 @@ The chart fully clears (both series + the local raw-point buffer) whenever `symb
 
 ## Coding conventions
 
-- **No `any`** — all WS message shapes must be typed in `src/types/ws.ts`.
-- Keep business logic (spread math, WS messaging) out of components. Components read state and render.
+- **No `any`** — all WS message shapes must be typed in `src/types/ws.ts`; all auth/session shapes in `src/types/auth.ts` and `src/lib/server/session.ts`.
+- Keep business logic (spread math, WS messaging, auth/session handling) out of components. Components read state and render.
 - `useSubscription` hook owns the WebSocket instance, ping interval, and reconnect logic. Components never touch `WebSocket` directly.
+- Client components/hooks call the backend via `apiFetch()` from `src/lib/apiClient.ts` (same-origin `/api/gw/*`) — never `fetch()` a gateway path directly, and never call Identity or the Gateway from the browser. The one exception is `useAuth.ts`'s own calls to `/api/auth/*`, which must use plain `fetch()`, not `apiFetch`, to avoid recursing into the refresh logic.
+- Never store tokens in `localStorage`, `sessionStorage`, or a JS-readable cookie — the session cookie is the only place tokens live, and it's httpOnly.
 - Prefer named exports for components.
 - Tailwind only for styling — no inline styles, no CSS Modules, no `style` props.
 
@@ -208,8 +287,23 @@ The chart fully clears (both series + the local raw-point buffer) whenever `symb
 ## Environment variables
 
 ```
+# WebSocket (Subscriptions Service)
 NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws
+
+# Google OAuth (public — used by GoogleOAuthProvider in the browser)
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=
+
+# BFF upstreams — server-only, never exposed to the browser
+IDENTITY_SERVICE_URL=http://localhost:5001
+API_GATEWAY_URL=http://localhost:5000
+
+# Session — server-only
+SESSION_SECRET=            # >= 32 characters
+SESSION_COOKIE_NAME=arbor_session
+# SESSION_TTL_SECONDS=604800
 ```
+
+See `.env.local.example` for a copy-pasteable template.
 
 ---
 
@@ -217,5 +311,5 @@ NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws
 
 - Right bar: Open/Close tabs, exchange dropdowns, enter/exit spread threshold fields.
 - Jobs/positions tabs below the chart (active jobs, open/closed positions).
-- Auth on the WebSocket endpoint.
+- Auth on the WebSocket endpoint (HTTP-side auth via the BFF already exists — see "Authentication (BFF)" above; WS ticks are still unauthenticated).
 - Multiple simultaneous subscriptions.

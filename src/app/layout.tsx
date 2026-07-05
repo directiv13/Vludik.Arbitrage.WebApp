@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, JetBrains_Mono } from "next/font/google";
+import { Providers } from "@/components/Auth/Providers";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -27,7 +28,9 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="h-full bg-bg font-sans text-tx">{children}</body>
+      <body className="h-full bg-bg font-sans text-tx">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

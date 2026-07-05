@@ -11,5 +11,12 @@ services:
       - /app/.next               # preserve Next.js build cache inside container
     environment:
       - NEXT_PUBLIC_WS_URL=ws://host.docker.internal:8080/ws
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=
+      - IDENTITY_SERVICE_URL=http://host.docker.internal:5001
+      - API_GATEWAY_URL=http://host.docker.internal:5000
+      # Dev-only placeholder — override via a project-root .env file for anything
+      # beyond local dev. Must be at least 32 characters (see src/lib/server/session.ts).
+      - SESSION_SECRET=${SESSION_SECRET:-dev-only-insecure-session-secret-do-not-use-in-prod}
+      - SESSION_COOKIE_NAME=arbor_session
     extra_hosts:
       - "host.docker.internal:host-gateway"  # Linux host resolution
