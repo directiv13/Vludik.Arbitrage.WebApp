@@ -1,0 +1,13 @@
+# Auto-merged by plain `docker compose up` (Docker Compose's standard dev override
+# convention). Adds local hot-reload on top of docker-compose.yml's prod-safe base.
+#
+# To build/run the prod target instead, exclude this file explicitly:
+#   docker compose -f docker-compose.yml up -d --build
+services:
+  web:
+    build:
+      target: dev
+    volumes:
+      - .:/app
+      - /app/node_modules        # prevent host node_modules from overwriting container's
+      - /app/.next               # preserve Next.js build cache inside container
