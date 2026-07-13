@@ -2,12 +2,18 @@
 
 Next.js (App Router) client for a crypto arbitrage platform. Streams live order book ticks over
 WebSocket from a Subscriptions Service, computes entry/exit spread in real time, and charts it
-with TradingView Lightweight Charts. Authentication runs through a server-side BFF
+with TradingView Lightweight Charts (seeded with historical spread on each subscription).
+Exchanges are chosen from a live venue list in the header and symbols from a filterable, fuzzy-search
+dropdown of the symbols common to both exchanges. Authentication runs through a server-side BFF
 (Backend-for-Frontend) — the browser only ever holds an opaque, httpOnly session cookie; Google
 sign-in tokens never touch client-side storage.
 
+Exchange/symbol discovery and spread history use three **public, no-auth** market endpoints
+(`/api/market/venues`, `/api/market/symbols`, `/api/market/history-spread`), proxied server-side to
+`API_GATEWAY_URL/market/*` so the browser only ever calls same-origin routes.
+
 See [CLAUDE.md](./CLAUDE.md) for the full architecture: the WebSocket protocol, spread math, the
-BFF's routes and refresh/CSRF handling, and coding conventions.
+market data endpoints, the BFF's routes and refresh/CSRF handling, and coding conventions.
 
 ## Prerequisites
 

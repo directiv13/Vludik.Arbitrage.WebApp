@@ -1,7 +1,15 @@
 'use client';
 
-import { StrategyMode, useSubscriptionStore } from '@/store/subscriptionStore';
+import { useEffect, useState } from 'react';
+import {
+  contractTypesForMode,
+  StrategyMode,
+  useSubscriptionStore,
+} from '@/store/subscriptionStore';
 import { RailLayout, useUiStore } from '@/store/uiStore';
+import { Dropdown } from '@/components/ui/Dropdown';
+import { fetchVenues } from '@/lib/marketClient';
+import { Venues } from '@/types/market';
 
 const MODES: ReadonlyArray<{ label: string; value: StrategyMode }> = [
   { label: 'Long + Short', value: 'long-short' },
@@ -21,8 +29,43 @@ const ICON_OFF = 'bg-transparent text-tx3 hover:text-tx2';
 export function Header() {
   const strategyMode = useSubscriptionStore((s) => s.strategyMode);
   const setStrategyMode = useSubscriptionStore((s) => s.setStrategyMode);
+  const buyExchangeName = useSubscriptionStore((s) => s.buyExchangeName);
+  const sellExchangeName = useSubscriptionStore((s) => s.sellExchangeName);
+  const setExchanges = useSubscriptionStore((s) => s.setExchanges);
+  const setBuyExchange = useSubscriptionStore((s) => s.setBuyExchange);
+  const setSellExchange = useSubscriptionStore((s) => s.setSellExchange);
   const layout = useUiStore((s) => s.layout);
   const setLayout = useUiStore((s) => s.setLayout);
+
+  const [venues, setVenues] = useState<Venues | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchVenues(controller.signal)
+      .then(setVenues)
+      .catch(() => {
+        /* ignore — dropdowns stay empty if venues can't load */
+      });
+    return () => controller.abort();
+  }, []);
+
+  const { buy: buyContractType, sell: sellContractType } = contractTypesForMode(strategyMode);
+  const buyOptions = venues?.[buyContractType] ?? [];
+  const sellOptions = venues?.[sellContractType] ?? [];
+
+  // Preselect defaults once venues load, and re-validate the pair whenever the
+  // contract types change (a mode switch may invalidate the current exchange).
+  useEffect(() => {
+    if (!venues) return;
+    const { buy, sell } = contractTypesForMode(strategyMode);
+    const bOpts = venues[buy];
+    const sOpts = venues[sell];
+    const validBuy = bOpts.includes(buyExchangeName) ? buyExchangeName : bOpts[0] ?? '';
+    const validSell = sOpts.includes(sellExchangeName) ? sellExchangeName : sOpts[0] ?? '';
+    if (validBuy !== buyExchangeName || validSell !== sellExchangeName) {
+      setExchanges(validBuy, validSell);
+    }
+  }, [venues, strategyMode, buyExchangeName, sellExchangeName, setExchanges]);
 
   return (
     <header className="flex h-[54px] flex-none items-center gap-[18px] border-b border-bd bg-panel px-4">
@@ -61,6 +104,35 @@ export function Header() {
             </button>
           );
         })}
+      </div>
+
+      {/* exchange route: BUY → SELL */}
+      <div className="ml-1 flex items-center gap-2">
+        <Dropdown
+          value={buyExchangeName}
+          options={buyOptions}
+          onChange={setBuyExchange}
+          prefix={
+            <span className="text-[9px] font-semibold tracking-[0.05em] text-grn">BUY</span>
+          }
+        />
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <path
+            d="M5 12h14m0 0l-5-5m5 5l-5 5"
+            stroke="#5d6473"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <Dropdown
+          value={sellExchangeName}
+          options={sellOptions}
+          onChange={setSellExchange}
+          prefix={
+            <span className="text-[9px] font-semibold tracking-[0.05em] text-red">SELL</span>
+          }
+        />
       </div>
 
       <div className="flex-1" />

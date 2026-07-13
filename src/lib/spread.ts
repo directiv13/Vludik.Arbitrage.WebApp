@@ -1,11 +1,16 @@
 import { Tick } from '@/types/ws';
 
 export function computeInSpread(buyTick: Tick, sellTick: Tick): number {
-  return (buyTick.bestAsk / sellTick.bestBid - 1) * 100;
+  return (buyTick.bestAsk - sellTick.bestBid) / buyTick.bestAsk * 100;
 }
 
 export function computeOutSpread(buyTick: Tick, sellTick: Tick): number {
-  return (buyTick.bestBid / sellTick.bestAsk - 1) * 100;
+  return (buyTick.bestBid - sellTick.bestAsk) / buyTick.bestBid * 100;
+}
+
+/** Mid price of a tick — used to estimate a job's notional value. */
+export function midPrice(tick: Tick): number {
+  return (tick.bestBid + tick.bestAsk) / 2;
 }
 
 /**

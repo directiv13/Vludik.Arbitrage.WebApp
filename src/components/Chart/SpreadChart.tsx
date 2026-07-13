@@ -23,7 +23,8 @@ import {
   type ChartFrequency,
   type SpreadPoint,
 } from '@/lib/spread';
-import { useSubscriptionStore } from '@/store/subscriptionStore';
+import { contractTypesForMode, useSubscriptionStore } from '@/store/subscriptionStore';
+import { fetchSpreadHistory } from '@/lib/marketClient';
 
 const IN_COLOR = '#07d100';
 const OUT_COLOR = '#ff5266';
@@ -221,7 +222,8 @@ export function SpreadChart() {
 
   // Clear the chart whenever the active subscription's symbol, exchanges, or
   // contractType (driven by strategyMode) changes, so stale data never mixes
-  // with the new subscription's ticks.
+  // with the new subscription's ticks — then seed it with historical spread for
+  // the new subscription. Live ticks append on top via the tick-append effect.
   useEffect(() => {
     const inSeries = inSeriesRef.current;
     const outSeries = outSeriesRef.current;
@@ -231,6 +233,46 @@ export function SpreadChart() {
     outSeries.setData([]);
     pointsRef.current = [];
     currentBucketTimeRef.current = 0;
+
+    if (!symbol || !buyExchangeName || !sellExchangeName) return;
+
+    const controller = new AbortController();
+    let stale = false;
+    const { buy, sell } = contractTypesForMode(strategyMode);
+    fetchSpreadHistory(
+      {
+        buyExchange: buyExchangeName,
+        buyContractType: buy,
+        sellExchange: sellExchangeName,
+        sellContractType: sell,
+        symbol,
+      },
+      controller.signal,
+    )
+      .then((history) => {
+        if (stale) return;
+        const inNow = inSeriesRef.current;
+        const outNow = outSeriesRef.current;
+        if (!inNow || !outNow) return;
+        // Keep any live points that arrived during the fetch (all newer than
+        // the last history bucket) so seeding doesn't drop them.
+        const lastHistTime = history.length ? history[history.length - 1].time : -Infinity;
+        const live = pointsRef.current.filter((p) => p.time > lastHistTime);
+        const merged = [...history, ...live];
+        pointsRef.current = merged;
+        const { inPoints, outPoints } = aggregateToBuckets(merged, frequencyRef.current);
+        inNow.setData(inPoints.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        outNow.setData(outPoints.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        currentBucketTimeRef.current = inPoints.length ? inPoints[inPoints.length - 1].time : 0;
+      })
+      .catch(() => {
+        /* ignore abort / failure — the chart just shows live ticks */
+      });
+
+    return () => {
+      stale = true;
+      controller.abort();
+    };
   }, [symbol, buyExchangeName, sellExchangeName, strategyMode]);
 
   const route =
